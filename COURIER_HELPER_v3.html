@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>COURIER HELPER — Мой курьер</title>
+<style>
+:root{font-family:system-ui,Arial;background:#f3f6fa;color:#172337}
+*{box-sizing:border-box}body{margin:0;max-width:700px;margin:auto;padding:18px 14px 85px}
+header{display:flex;justify-content:space-between;align-items:center;gap:8px}h1{font-size:25px;margin:8px 0 2px}
+small,.muted{color:#6d7888}.card{background:white;border-radius:18px;padding:17px;margin-top:14px;box-shadow:0 3px 15px #1723370a}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.metric{background:#f4f7fb;padding:13px;border-radius:13px}
+.metric strong{display:block;font-size:24px;margin-top:5px}
+button{border:0;border-radius:13px;padding:14px 12px;font-size:16px;font-weight:700;cursor:pointer}
+button:disabled{opacity:.45}.green{background:#16a36a;color:white}.red{background:#e34d56;color:white}
+.blue{background:#2563eb;color:white}.outline{background:#eaf0f8;color:#1f385b}
+.buttons{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+#shiftToggle{display:block;width:100%;margin-top:14px;min-height:56px;font-size:18px}
+nav{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;position:fixed;bottom:0;left:0;right:0;max-width:700px;margin:auto;background:white;padding:9px 14px 13px;box-shadow:0 -2px 15px #17233715}
+nav button{font-size:13px;padding:11px 3px}nav .active{background:#dbeafe;color:#1d4ed8}.hidden{display:none}
+label{display:block;font-size:13px;margin:10px 0 4px;color:#536073}input{width:100%;padding:12px;border:1px solid #d8e0e9;border-radius:10px;font-size:16px}
+#map{height:220px;background:#eaf1f8;border-radius:12px;position:relative;overflow:hidden}svg{width:100%;height:100%}
+#status,#diagnostic{font-size:13px;margin-top:12px;color:#536073;white-space:pre-line;line-height:1.5}
+#diagnostic{background:#f4f7fb;border-radius:10px;padding:10px}#badge{font-size:13px;white-space:nowrap}
+.row{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:9px 0}
+@media(max-width:350px){.metric strong{font-size:20px}h1{font-size:22px}}
+</style>
+</head>
+<body>
+<header><div><h1>🚴 Мой курьер</h1><small>Смены · маршрут · заработок</small></div><span id="badge">⚪ Не на смене</span></header>
+<section id="home">
+ <div class="card">
+  <div class="grid">
+   <div class="metric">Время смены<strong id="time">0 мин</strong></div>
+   <div class="metric">Расстояние<strong id="km">0,00 км</strong></div>
+   <div class="metric">Заработок<strong id="income">0,00 zł</strong></div>
+   <div class="metric">Расходы<strong id="expenses">0,00 zł</strong></div>
+   <div class="metric">Заказы<strong id="orders">0</strong></div>
+   <div class="metric">Чистый доход<strong id="net">0,00 zł</strong></div>
+  </div>
+  <button class="green" id="shiftToggle" type="button">▶ Начать смену</button>
+  <div id="status" aria-live="polite">Нажми «Проверить GPS», чтобы проверить доступ к координатам.</div>
+  <button class="outline" id="gpsTest" style="margin-top:10px;width:100%" type="button">📍 Проверить GPS</button>
+  <div id="diagnostic" aria-live="polite">GPS ещё не проверялся.</div>
+ </div>
+ <div class="card"><h3>Добавить данные</h3><div class="grid">
+  <div><label for="addIncome">Заработок, zł</label><input id="addIncome" type="number" min="0" step=".01" placeholder="Например, 25"></div>
+  <div><label for="addExpense">Расход, zł</label><input id="addExpense" type="number" min="0" step=".01" placeholder="Например, 10"></div>
+ </div><div class="buttons"><button class="blue" id="saveIncome">+ Заработок и заказ</button><button class="outline" id="saveExpense">+ Расход</button></div></div>
+</section>
+<section id="route" class="hidden"><div class="card"><h2>🗺️ Маршрут</h2><p class="muted">GPS-точки текущей смены. Схема не является картой улиц.</p>
+<div id="map"><svg viewBox="0 0 320 220" preserveAspectRatio="xMidYMid meet"><polyline id="path" fill="none" stroke="#2563eb" stroke-width="3" points=""/></svg></div>
+<p id="gpsinfo">Пока нет GPS-точек.</p><button class="outline" id="gpsRetry">Обновить GPS</button></div></section>
+<section id="stats" class="hidden"><div class="card"><h2>📊 Статистика</h2><div id="history">Завершённых смен пока нет.</div><button class="outline" id="export">Скачать историю CSV</button></div></section>
+<nav><button data-tab="home" class="active">🏠 Смена</button><button data-tab="route">🗺️ Маршрут</button><button data-tab="stats">📊 Статистика</button></nav>
+<script>
+'use strict';
+// Keep the original key to retain data stored by the v2 app on the same origin.
+const KEY='courier_tracker_v2';
+const defaults={active:false,start:0,elapsed:0,km:0,income:0,expenses:0,orders:0,points:[],history:[]};
+let existing=null;
+try { existing=JSON.parse(localStorage.getItem(KEY)); } catch (_) {}
+let s=Object.assign({},defaults,(existing&&typeof existing==='object')?existing:{});
+if(!Array.isArray(s.points))s.points=[];
+if(!Array.isArray(s.history))s.history=[];
+for(const field of ['km','income','expenses','orders','start','elapsed']) {
+ if(!Number.isFinite(Number(s[field])))s[field]=0;else s[field]=Number(s[field]);
+}
+let watch=null;
+let last=s.points.length?s.points[s.points.length-1]:null;
+let accepted=0,rejected=0,lastFix=null,lastError='';
+const $=id=>document.getElementById(id);
+const money=n=>Number(n||0).toFixed(2).replace('.',',')+' zł';
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(s));}catch(e){status('Не удалось сохранить смену: '+e.message);}}
+function status(t){$('status').textContent=t;}
+function diagnostic(t){$('diagnostic').textContent=t;}
+function currentKm(){return Number(s.km||0).toFixed(2);}
+function render(){
+ const elapsed=s.active?Math.max(0,Date.now()-s.start):s.elapsed;
+ $('time').textContent=Math.floor(elapsed/60000)+' мин';
+ $('km').textContent=currentKm().replace('.',',')+' км';
+ $('income').textContent=money(s.income);
+ $('expenses').textContent=money(s.expenses);
+ $('net').textContent=money(s.income-s.expenses);
+ $('orders').textContent=s.orders;
+ $('badge').textContent=s.active?'🟢 Смена идёт':'⚪ Не на смене';
+ const b=$('shiftToggle');
+ b.className=s.active?'red':'green';
+ b.textContent=s.active?'■ Закончить смену':'▶ Начать смену';
+ $('gpsinfo').textContent='GPS-точек: '+s.points.length+'. Расстояние: '+currentKm()+' км';
+ draw();
+ const hist=$('history');hist.replaceChildren();
+ if(!s.history.length){hist.textContent='Завершённых смен пока нет.';}
+ else {for(const h of s.history.slice().reverse()){
+   const div=document.createElement('div');div.className='row';
+   const date=document.createElement('span');date.textContent=new Date(h.start).toLocaleString('ru-RU');
+   const stat=document.createElement('span');stat.textContent=Number(h.km||0).toFixed(2)+' км · '+money(Number(h.income||0)-Number(h.expenses||0));
+   div.append(date,stat);hist.append(div);
+ }}
+}
+function dist(a,b){
+ const R=6371,r=x=>x*Math.PI/180;
+ const dlat=r(b.lat-a.lat),dlon=r(b.lon-a.lon);
+ const q=Math.sin(dlat/2)**2+Math.cos(r(a.lat))*Math.cos(r(b.lat))*Math.sin(dlon/2)**2;
+ return 2*R*Math.atan2(Math.sqrt(q),Math.sqrt(Math.max(0,1-q)));
+}
+function updateDiag(extra=''){
+ const protocol=location.protocol;
+ const originNote=protocol==='file:'?'Файл открыт из «Загрузок». Для стабильного GPS открой приложение по HTTPS.':
+  !window.isSecureContext?'Страница не защищена. GPS может блокироваться, нужен HTTPS.':
+  'Страница открыта в защищённом контексте.';
+ const fix=lastFix?'Последняя координата: '+new Date(lastFix.at).toLocaleTimeString('ru-RU')+', точность ±'+Math.round(lastFix.accuracy)+' м.':'Координат пока нет.';
+ diagnostic(originNote+'\n'+fix+'\nПринято точек: '+accepted+'; пропущено: '+rejected+'.'+(lastError?'\nОшибка: '+lastError:'')+(extra?'\n'+extra:''));
+}
+function errorText(e){
+ const code=e&&e.code;
+ if(code===1)return 'Доступ к местоположению запрещён для этой страницы (код 1).';
+ if(code===2)return 'Телефон пока не может определить координаты (код 2). Выйди на открытое место и включи GPS.';
+ if(code===3)return 'GPS не ответил вовремя (код 3). Попробуй на открытом месте.';
+ return 'GPS: '+(e&&e.message?e.message:'неизвестная ошибка');
+}
+function onError(e){lastError=errorText(e);status(lastError);updateDiag();}
+function onPos(p){
+ const q={lat:p.coords.latitude,lon:p.coords.longitude,at:p.timestamp||Date.now(),accuracy:p.coords.accuracy};
+ if(!Number.isFinite(q.lat)||!Number.isFinite(q.lon)){lastError='Получены некорректные координаты.';updateDiag();return;}
+ lastFix=q;lastError='';
+ if(!s.active){status('GPS работает! Координаты получены, точность ±'+Math.round(q.accuracy)+' м.');updateDiag('Чтобы считать километры, начни смену.');return;}
+ if(!Number.isFinite(q.accuracy)||q.accuracy>150){
+  rejected++;status('GPS найден, но точность слабая: ±'+Math.round(q.accuracy)+' м. Жду более точную позицию.');updateDiag();return;
+ }
+ if(last){
+  const d=dist(last,q),dt=(q.at-last.at)/1000;
+  const minKm=Math.max(0.005,Math.min(0.03,(Number(last.accuracy||0)+q.accuracy)/2000));
+  if(dt<=0){rejected++;updateDiag('Повторная или устаревшая GPS-точка.');return;}
+  if(d<minKm){rejected++;updateDiag('Движение меньше порога защиты от GPS-шума: '+Math.round(minKm*1000)+' м.');return;}
+  const speed=d/(dt/3600);
+  if(speed>65){rejected++;updateDiag('Пропущен скачок GPS (расчётная скорость '+Math.round(speed)+' км/ч).');return;}
+  // Also count longer valid segments after temporary loss of signal, if speed is realistic.
+  s.km+=d;
+ }
+ last=q;s.points.push(q);accepted++;persist();render();
+ status('GPS работает · точность ±'+Math.round(q.accuracy)+' м · расстояние '+currentKm()+' км');updateDiag();
+}
+function canLocate(){
+ if(!navigator.geolocation){onError({message:'Браузер не поддерживает геолокацию.'});return false;}
+ if(!window.isSecureContext){onError({message:'Эта страница не является защищённой. Открой HTTPS-ссылку.'});return false;}
+ return true;
+}
+function gps(){
+ if(!s.active)return;
+ if(!canLocate())return;
+ if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null;}
+ status('Запрашиваю GPS… Оставь Chrome открытым, дождись координат.');updateDiag();
+ try {watch=navigator.geolocation.watchPosition(onPos,onError,{enableHighAccuracy:true,maximumAge:0,timeout:30000});}
+ catch(e){onError({message:e.message});}
+}
+function draw(){
+ const pts=s.points;
+ if(!pts.length){$('path').setAttribute('points','');return;}
+ const xs=pts.map(p=>p.lon),ys=pts.map(p=>p.lat),minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys);
+ const dx=Math.max(maxx-minx,.0001),dy=Math.max(maxy-miny,.0001);
+ $('path').setAttribute('points',pts.map(p=>(15+(p.lon-minx)/dx*290).toFixed(1)+','+(205-(p.lat-miny)/dy*190).toFixed(1)).join(' '));
+}
+$('shiftToggle').onclick=()=>{
+ if(s.active){
+  if(!confirm('Закончить смену и сохранить результат?'))return;
+  s.elapsed=Date.now()-s.start;
+  s.history.push({start:s.start,end:Date.now(),km:s.km,income:s.income,expenses:s.expenses,orders:s.orders});
+  s.active=false;
+  if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null;}
+  last=null;persist();render();status('Смена завершена и сохранена.');updateDiag();
+ }else{
+  s.active=true;s.start=Date.now();s.elapsed=0;s.km=0;s.income=0;s.expenses=0;s.orders=0;s.points=[];
+  last=null;accepted=0;rejected=0;lastError='';persist();render();gps();
+ }
+};
+$('gpsTest').onclick=()=>{
+ if(!canLocate())return;
+ status('Проверяю GPS, это может занять до 30 секунд…');updateDiag();
+ navigator.geolocation.getCurrentPosition(onPos,onError,{enableHighAccuracy:true,maximumAge:0,timeout:30000});
+};
+$('saveIncome').onclick=()=>{let n=Number($('addIncome').value);if(!(n>0))return alert('Укажи сумму заработка');s.income+=n;s.orders++;$('addIncome').value='';persist();render();};
+$('saveExpense').onclick=()=>{let n=Number($('addExpense').value);if(!(n>0))return alert('Укажи сумму расхода');s.expenses+=n;$('addExpense').value='';persist();render();};
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{
+ document.querySelectorAll('section').forEach(x=>x.classList.add('hidden'));
+ $(b.dataset.tab).classList.remove('hidden');
+ document.querySelectorAll('[data-tab]').forEach(x=>x.classList.remove('active'));
+ b.classList.add('active');render();
+});
+$('gpsRetry').onclick=()=>{if(s.active)gps();else $('gpsTest').click();};
+$('export').onclick=()=>{
+ const rows=[['Дата','Минуты','Км','Заработок zł','Расходы zł','Заказы'],...s.history.map(h=>[
+ new Date(h.start).toISOString(),Math.round((h.end-h.start)/60000),Number(h.km||0).toFixed(2),Number(h.income||0).toFixed(2),Number(h.expenses||0).toFixed(2),h.orders])];
+ const blob=new Blob(['\ufeff'+rows.map(r=>r.join(';')).join('\n')],{type:'text/csv;charset=utf-8'}),a=document.createElement('a');
+ const url=URL.createObjectURL(blob);a.href=url;a.download='courier_shifts.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+updateDiag();render();setInterval(render,10000);
+if(s.active)gps();
+</script>
+</body>
+</html>
